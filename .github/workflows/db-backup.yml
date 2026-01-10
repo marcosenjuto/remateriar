@@ -1,15 +1,13 @@
 name: PostgreSQL Backup (Neon → R2)
-
 on:
   schedule:
-    - cron: "0 2 * * *" # todos los días 02:00 UTC
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 jobs:
   backup:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -17,39 +15,66 @@ jobs:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
       BACKUP_PREFIX: neon
-
+      
     steps:
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
-
+          
       - name: Check AWS CLI
         run: aws --version
-
+        
       - name: Configure AWS for R2
         run: |
           aws configure set aws_access_key_id "$R2_ACCESS_KEY_ID"
           aws configure set aws_secret_access_key "$R2_SECRET_ACCESS_KEY"
           aws configure set region auto
-
+          
+      - name: Test R2 connection
+        run: |
+          echo "Testing R2 connection..."
+          aws s3 ls "s3://$R2_BUCKET" \
+            --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" || \
+            echo "Warning: Could not list bucket contents"
+          
       - name: Create and upload backup
         run: |
           set -e
-
           TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
           FILE="${BACKUP_PREFIX}_${TIMESTAMP}.dump"
-
+          
           echo "Dumping database..."
           pg_dump "$DATABASE_URL" \
             --format=custom \
             --no-owner \
             --no-privileges \
             > "$FILE"
-
+          
+          echo "Compressing backup..."
           gzip "$FILE"
-
+          
           echo "Uploading to R2..."
           aws s3 cp "$FILE.gz" \
             "s3://$R2_BUCKET/$FILE.gz" \
             --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          
+          echo "Backup completed successfully: $FILE.gz"
+          
+      - name: Cleanup old backups (keep last 7 days)
+        run: |
+          echo "Cleaning up old backups..."
+          CUTOFF_DATE=$(date -d '7 days ago' +%Y-%m-%d)
+          
+          aws s3 ls "s3://$R2_BUCKET/" \
+            --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" | \
+          while read -r line; do
+            FILE_DATE=$(echo "$line" | awk '{print $1}')
+            FILE_NAME=$(echo "$line" | awk '{print $4}')
+            
+            if [[ "$FILE_NAME" == ${BACKUP_PREFIX}_* ]] && [[ "$FILE_DATE" < "$CUTOFF_DATE" ]]; then
+              echo "Deleting old backup: $FILE_NAME"
+              aws s3 rm "s3://$R2_BUCKET/$FILE_NAME" \
+                --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+            fi
+          done || echo "No old backups to clean"
