@@ -44,22 +44,37 @@ jobs:
           TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
           FILE="${BACKUP_PREFIX}_${TIMESTAMP}.dump"
           
-          echo "Dumping database..."
+          echo "=== Starting backup process ==="
+          echo "Timestamp: $TIMESTAMP"
+          
+          echo -e "\n=== Dumping database ==="
           pg_dump "$DATABASE_URL" \
             --format=custom \
             --no-owner \
             --no-privileges \
-            > "$FILE"
+            --verbose \
+            > "$FILE" 2>&1 | tail -20
           
-          echo "Compressing backup..."
-          gzip "$FILE"
+          DUMP_SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE")
+          echo "Dump size: $(numfmt --to=iec-i --suffix=B $DUMP_SIZE)"
           
-          echo "Uploading to R2..."
+          echo -e "\n=== Compressing backup ==="
+          gzip -v "$FILE"
+          
+          COMPRESSED_SIZE=$(stat -f%z "$FILE.gz" 2>/dev/null || stat -c%s "$FILE.gz")
+          echo "Compressed size: $(numfmt --to=iec-i --suffix=B $COMPRESSED_SIZE)"
+          
+          RATIO=$((DUMP_SIZE / COMPRESSED_SIZE))
+          echo "Compression ratio: ${RATIO}:1"
+          
+          echo -e "\n=== Uploading to R2 ==="
           aws s3 cp "$FILE.gz" \
             "s3://$R2_BUCKET/$FILE.gz" \
             --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
           
-          echo "Backup completed successfully: $FILE.gz"
+          echo -e "\n=== Backup completed successfully ==="
+          echo "File: $FILE.gz"
+          echo "Size: $(numfmt --to=iec-i --suffix=B $COMPRESSED_SIZE)"
           
       - name: Cleanup old backups (keep last 7 days)
         run: |
