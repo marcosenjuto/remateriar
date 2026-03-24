@@ -48,12 +48,13 @@ jobs:
           echo "Timestamp: $TIMESTAMP"
           
           echo -e "\n=== Dumping database ==="
+
           pg_dump "$DATABASE_URL" \
             --format=custom \
             --no-owner \
             --no-privileges \
             --verbose \
-            > "$FILE" 2>&1 | tail -20
+            > "$FILE" 2> >(tee dump.log >&2)
           
           DUMP_SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE")
           echo "Dump size: $(numfmt --to=iec-i --suffix=B $DUMP_SIZE)"
